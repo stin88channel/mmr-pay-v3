@@ -75,7 +75,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
     // Отправляем данные пользователя
     res.status(200).json({
-      id: user._id,
+      id: user._id.toString(),
       email: user.email,
       login: user.login,
       phoneNumber: user.phoneNumber,

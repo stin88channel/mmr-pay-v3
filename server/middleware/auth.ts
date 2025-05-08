@@ -33,7 +33,10 @@ export const withAuth: RequestHandler = async (req: AuthRequest, res: Response, 
       return;
     }
 
-    req.user = user;
+    req.user = {
+      ...user.toObject(),
+      id: user._id.toString()
+    };
     next();
   } catch (error) {
     console.error('Ошибка при проверке токена:', error);
@@ -58,7 +61,10 @@ export const withNextAuth = (handler: any) => {
         return res.status(401).json({ message: 'Пользователь не найден' });
       }
 
-      req.user = user;
+      req.user = {
+        ...user.toObject(),
+        id: user._id.toString()
+      };
       return handler(req, res);
     } catch (error) {
       console.error('Ошибка при проверке токена:', error);

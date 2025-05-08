@@ -47,7 +47,7 @@ export const register = async (req: Request, res: Response) => {
 
     res.status(201).json({
       user: {
-        id: user._id,
+        id: user._id.toString(),
         email: user.email,
         login: user.login,
         typeOfAccount: user.typeOfAccount,
@@ -115,7 +115,7 @@ export const login = async (req: Request, res: Response) => {
 
     res.json({
       user: {
-        id: user._id,
+        id: user._id.toString(),
         email: user.email,
         login: user.login,
         typeOfAccount: user.typeOfAccount,
