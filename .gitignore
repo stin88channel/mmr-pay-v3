@@ -38,13 +38,22 @@ client/.next/
 client/out/
 client/build/
 client/dist/
+client/package-lock.json
 
 # Server
 server/node_modules/
 server/dist/
 server/build/
+server/.next/
+server/package-lock.json
 
 # Database
 *.sqlite
 *.sqlite3
-*.db 
+*.db
+
+# Cache
+.cache/
+*.cache
+.temp/
+.tmp/ 
