@@ -1,6 +1,21 @@
 import { useState, useCallback, useEffect } from 'react';
 import { authApi } from '@/lib/api';
-import type { User } from '@/types/user';
+
+export interface User {
+  id: string;
+  email: string;
+  name?: string;
+  login: string;
+  typeOfAccount: 'personal' | 'merchant' | 'admin' | 'moderator';
+  twoFactorAuth?: {
+    enabled: boolean;
+    secret: string;
+    backupCodes?: Array<{
+      code: string;
+      used: boolean;
+    }>;
+  };
+}
 
 interface AuthState {
   isAuthenticated: boolean;

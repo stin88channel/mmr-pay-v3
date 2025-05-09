@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
 import { motion } from 'framer-motion';
+import { useNavigate } from 'react-router-dom';
 
 const container = {
   hidden: { opacity: 0 },
@@ -35,6 +36,7 @@ const themePreview = {
 
 const Settings: React.FC = () => {
   const { theme, setTheme } = useTheme();
+  const navigate = useNavigate();
   
   const handleThemeSelect = (value: string) => {
     setTheme(value as 'light' | 'dark' | 'purple' | 'green' | 'midnight' | 'charcoal');
@@ -121,7 +123,7 @@ const Settings: React.FC = () => {
                     Защитите свой аккаунт дополнительным уровнем безопасности
                   </p>
                 </div>
-                <Button variant="outline">Настроить</Button>
+                <Button variant="outline" onClick={() => navigate('/profile/security/2fa')}>Настроить</Button>
               </motion.div>
               
               <motion.div 
@@ -134,7 +136,7 @@ const Settings: React.FC = () => {
                     Изменить пароль для входа в систему
                   </p>
                 </div>
-                <Button variant="outline">Изменить</Button>
+                <Button variant="outline" onClick={() => navigate('/profile/security/password')}>Изменить</Button>
               </motion.div>
             </CardContent>
           </Card>

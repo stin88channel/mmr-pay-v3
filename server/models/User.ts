@@ -7,6 +7,19 @@ interface INotifications {
   systemNotifications: boolean;
 }
 
+export interface ActivityLog {
+  timestamp: Date;
+  event: string;
+  ip: string;
+  deviceInfo: string;
+  location?: {
+    country: string | null;
+    region: string | null;
+    city: string | null;
+  };
+  details?: Record<string, any>;
+}
+
 export interface IUser extends Document {
   email: string;
   login: string;
@@ -27,12 +40,30 @@ export interface IUser extends Document {
   apiKey?: string;
   securitySettings: {
     loginNotifications: boolean;
-    activityLogging: boolean;
+    activityLogging: {
+      enabled: boolean;
+      retentionPeriod: number;
+      detailLevel: 'basic' | 'standard' | 'detailed' | 'debug';
+    };
     failedLoginLimit: boolean;
     failedLoginAttempts: number;
     lastFailedLoginAttempt?: Date;
     accountLocked: boolean;
     accountLockedUntil?: Date;
+    ipRestrictions: {
+      enabled: boolean;
+      allowedIps: Array<string>;
+    };
+    timeRestrictions: {
+      enabled: boolean;
+      workDaysOnly: boolean;
+      startTime: string;
+      endTime: string;
+    };
+    geoRestrictions: {
+      enabled: boolean;
+      allowedCountries: Array<string>;
+    };
   };
   notifications: {
     newRequests: boolean;
@@ -49,6 +80,16 @@ export interface IUser extends Document {
       city: string | null;
     };
   }>;
+  activityLogs: Array<ActivityLog>;
+  twoFactorAuth: {
+    enabled: boolean;
+    secret: string;
+    backupCodes: Array<{
+      code: string;
+      used: boolean;
+      usedAt?: Date;
+    }>;
+  };
   comparePassword(candidatePassword: string): Promise<boolean>;
   isPasswordInHistory(candidatePassword: string): Promise<boolean>;
   addPasswordToHistory(password: string): Promise<void>;
@@ -56,7 +97,44 @@ export interface IUser extends Document {
   handleFailedLogin(): Promise<void>;
   resetFailedLoginAttempts(): Promise<void>;
   isAccountLocked(): boolean;
+  checkIpRestriction(ip: string): boolean;
+  checkTimeRestriction(): boolean;
+  checkGeoRestriction(country: string): boolean;
+  logActivity(
+    event: string,
+    ip: string,
+    deviceInfo: string,
+    location?: { country: string | null; region: string | null; city: string | null },
+    details?: Record<string, any>
+  ): Promise<void>;
 }
+
+const activityLogSchema = new Schema<ActivityLog>({
+  timestamp: {
+    type: Date,
+    default: Date.now
+  },
+  event: {
+    type: String,
+    required: true
+  },
+  ip: {
+    type: String,
+    required: true
+  },
+  deviceInfo: {
+    type: String,
+    required: true
+  },
+  location: {
+    country: String,
+    region: String,
+    city: String
+  },
+  details: {
+    type: Schema.Types.Mixed
+  }
+});
 
 const userSchema = new Schema<IUser>({
   email: {
@@ -138,14 +216,26 @@ const userSchema = new Schema<IUser>({
     type: Date,
     default: Date.now
   },
+  activityLogs: [activityLogSchema],
   securitySettings: {
     loginNotifications: {
       type: Boolean,
       default: true
     },
     activityLogging: {
-      type: Boolean,
-      default: false
+      enabled: {
+        type: Boolean,
+        default: false
+      },
+      retentionPeriod: {
+        type: Number,
+        default: 30
+      },
+      detailLevel: {
+        type: String,
+        enum: ['basic', 'standard', 'detailed', 'debug'],
+        default: 'standard'
+      }
     },
     failedLoginLimit: {
       type: Boolean,
@@ -164,6 +254,44 @@ const userSchema = new Schema<IUser>({
     },
     accountLockedUntil: {
       type: Date
+    },
+    ipRestrictions: {
+      enabled: {
+        type: Boolean,
+        default: false
+      },
+      allowedIps: [{
+        type: String,
+        trim: true
+      }]
+    },
+    timeRestrictions: {
+      enabled: {
+        type: Boolean,
+        default: false
+      },
+      workDaysOnly: {
+        type: Boolean,
+        default: false
+      },
+      startTime: {
+        type: String,
+        default: "09:00"
+      },
+      endTime: {
+        type: String,
+        default: "18:00"
+      }
+    },
+    geoRestrictions: {
+      enabled: {
+        type: Boolean,
+        default: false
+      },
+      allowedCountries: [{
+        type: String,
+        trim: true
+      }]
     }
   },
   ipAddresses: [{
@@ -179,7 +307,30 @@ const userSchema = new Schema<IUser>({
       postal: String,
       timezone: String
     }
-  }]
+  }],
+  twoFactorAuth: {
+    enabled: {
+      type: Boolean,
+      default: false
+    },
+    secret: {
+      type: String,
+      default: null
+    },
+    backupCodes: [{
+      code: {
+        type: String,
+        required: true
+      },
+      used: {
+        type: Boolean,
+        default: false
+      },
+      usedAt: {
+        type: Date
+      }
+    }]
+  }
 });
 
 // Хэширование пароля перед сохранением
@@ -228,11 +379,10 @@ userSchema.methods.addPasswordToHistory = async function(password: string): Prom
 };
 
 // Метод для генерации API ключа
-userSchema.methods.generateApiKey = async function() {
+userSchema.methods.generateApiKey = async function(): Promise<string> {
   const crypto = require('crypto');
-  const apiKey = crypto.randomBytes(32).toString('hex');
+  const apiKey = `mmr_${crypto.randomBytes(32).toString('hex')}`;
   this.apiKey = apiKey;
-  await this.save();
   return apiKey;
 };
 
@@ -279,6 +429,90 @@ userSchema.methods.isAccountLocked = function(): boolean {
   }
 
   return true;
+};
+
+// Метод для проверки IP-ограничений
+userSchema.methods.checkIpRestriction = function(ip: string): boolean {
+  if (!this.securitySettings.ipRestrictions.enabled) {
+    return true;
+  }
+
+  return this.securitySettings.ipRestrictions.allowedIps.some((allowedIp: string) => {
+    // Проверка на точное совпадение
+    if (allowedIp === ip) return true;
+    
+    // Проверка на CIDR нотацию (например, 192.168.1.0/24)
+    if (allowedIp.includes('/')) {
+      const [subnet, bits] = allowedIp.split('/');
+      const ipNum = ip.split('.').reduce((acc: number, octet: string) => (acc << 8) + parseInt(octet), 0);
+      const subnetNum = subnet.split('.').reduce((acc: number, octet: string) => (acc << 8) + parseInt(octet), 0);
+      const mask = ~((1 << (32 - parseInt(bits))) - 1);
+      return (ipNum & mask) === (subnetNum & mask);
+    }
+    
+    return false;
+  });
+};
+
+// Метод для проверки временных ограничений
+userSchema.methods.checkTimeRestriction = function(): boolean {
+  if (!this.securitySettings.timeRestrictions.enabled) {
+    return true;
+  }
+
+  const now = new Date();
+  const currentDay = now.getDay(); // 0 - воскресенье, 1-5 - пн-пт, 6 - суббота
+  const currentTime = now.toLocaleTimeString('en-US', { hour12: false });
+
+  // Проверка рабочих дней
+  if (this.securitySettings.timeRestrictions.workDaysOnly && (currentDay === 0 || currentDay === 6)) {
+    return false;
+  }
+
+  // Проверка времени
+  return currentTime >= this.securitySettings.timeRestrictions.startTime && 
+         currentTime <= this.securitySettings.timeRestrictions.endTime;
+};
+
+// Метод для проверки геоограничений
+userSchema.methods.checkGeoRestriction = function(country: string): boolean {
+  if (!this.securitySettings.geoRestrictions.enabled) {
+    return true;
+  }
+
+  return this.securitySettings.geoRestrictions.allowedCountries.includes(country);
+};
+
+// Метод для логирования активности
+userSchema.methods.logActivity = async function(
+  event: string,
+  ip: string,
+  deviceInfo: string,
+  location?: { country: string | null; region: string | null; city: string | null },
+  details?: Record<string, any>
+): Promise<void> {
+  if (!this.securitySettings.activityLogging.enabled) {
+    return;
+  }
+
+  const log: ActivityLog = {
+    timestamp: new Date(),
+    event,
+    ip,
+    deviceInfo,
+    location,
+    details
+  };
+
+  this.activityLogs.push(log);
+
+  // Удаляем старые логи в соответствии с периодом хранения
+  const retentionDate = new Date();
+  retentionDate.setDate(retentionDate.getDate() - this.securitySettings.activityLogging.retentionPeriod);
+  
+  this.activityLogs = this.activityLogs.filter((log: ActivityLog) => log.timestamp > retentionDate);
+
+  await this.save();
 };
 
 // Проверяем, существует ли уже модель

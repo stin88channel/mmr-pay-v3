@@ -3,8 +3,10 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { User, IUser } from '../models/User';
 import { AuthRequest } from '../middleware/auth';
+import IPinfo from 'ipinfo';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'mmrpayv3!@#';
+const IPINFO_TOKEN = process.env.IPINFO_TOKEN || '';
 
 export const register = async (req: Request, res: Response) => {
   try {
@@ -89,6 +91,37 @@ export const login = async (req: Request, res: Response) => {
       });
     }
 
+    // Проверяем ограничения
+    if (user.securitySettings.ipRestrictions.enabled) {
+      const ipAllowed = user.checkIpRestriction(req.ip);
+      if (!ipAllowed) {
+        return res.status(403).json({
+          message: 'Доступ с вашего IP-адреса запрещен'
+        });
+      }
+    }
+
+    if (user.securitySettings.timeRestrictions.enabled) {
+      const timeAllowed = user.checkTimeRestriction();
+      if (!timeAllowed) {
+        return res.status(403).json({
+          message: 'Доступ в данное время запрещен'
+        });
+      }
+    }
+
+    if (user.securitySettings.geoRestrictions.enabled) {
+      const ipinfo = new IPinfo(IPINFO_TOKEN);
+      const ip = req.ip || req.socket.remoteAddress || '';
+      const ipDetails = await ipinfo.lookupIp(ip);
+      const geoAllowed = user.checkGeoRestriction(ipDetails.country || '');
+      if (!geoAllowed) {
+        return res.status(403).json({
+          message: 'Доступ из вашей страны запрещен'
+        });
+      }
+    }
+
     const isMatch = await user.comparePassword(password);
     console.log('🔐 Проверка пароля:', { isMatch });
 
@@ -103,6 +136,56 @@ export const login = async (req: Request, res: Response) => {
 
     // Обновляем информацию о последнем входе
     user.lastLogin = new Date();
+
+    // Добавляем информацию о текущем IP и устройстве
+    const ipAddress = req.ip || req.socket.remoteAddress || '';
+    const userAgent = req.headers['user-agent'] || '';
+    
+    // Получаем информацию о геолокации
+    let locationInfo: {
+      country: string | null;
+      region: string | null;
+      city: string | null;
+    } = {
+      country: null,
+      region: null,
+      city: null
+    };
+
+    try {
+      const ipinfo = new IPinfo(IPINFO_TOKEN);
+      const ipDetails = await ipinfo.lookupIp(ipAddress);
+      
+      if (ipDetails) {
+        locationInfo = {
+          country: ipDetails.country || null,
+          region: ipDetails.region || null,
+          city: ipDetails.city || null
+        };
+      }
+    } catch (error) {
+      console.error('Ошибка при получении геолокации:', error);
+    }
+    
+    // Проверяем, есть ли уже такой IP в списке
+    const existingIpIndex = user.ipAddresses.findIndex((ip: { address: string; deviceInfo: string }) => 
+      ip.address === ipAddress && ip.deviceInfo === userAgent
+    );
+
+    if (existingIpIndex !== -1) {
+      // Обновляем время последнего использования
+      user.ipAddresses[existingIpIndex].lastUsed = new Date();
+      user.ipAddresses[existingIpIndex].location = locationInfo;
+    } else {
+      // Добавляем новый IP
+      user.ipAddresses.push({
+        address: ipAddress,
+        lastUsed: new Date(),
+        deviceInfo: userAgent,
+        location: locationInfo
+      });
+    }
+
     await user.save();
 
     const token = jwt.sign(
@@ -110,8 +193,6 @@ export const login = async (req: Request, res: Response) => {
       JWT_SECRET,
       { expiresIn: '24h' }
     );
-
-    console.log('✅ Успешный вход:', { email });
 
     res.json({
       user: {
@@ -142,8 +223,10 @@ export const logout = async (req: Request, res: Response) => {
 export const changePassword = async (req: AuthRequest, res: Response) => {
   try {
     const { currentPassword, newPassword } = req.body;
-    const user = req.user;
-
+    
+    // Получаем полную модель пользователя из базы данных
+    const user = await User.findById(req.user?.id);
+    
     if (!user) {
       return res.status(401).json({ error: 'Не авторизован' });
     }
@@ -173,6 +256,23 @@ export const changePassword = async (req: AuthRequest, res: Response) => {
     const salt = await bcrypt.genSalt(10);
     user.password = await bcrypt.hash(newPassword, salt);
     user.lastPasswordChange = new Date();
+
+    // Логируем изменение пароля, если включено журналирование
+    if (user.securitySettings.activityLogging.enabled) {
+      await user.logActivity(
+        'Изменение пароля',
+        req.ip || req.socket.remoteAddress || '',
+        req.headers['user-agent'] || '',
+        {
+          method: 'change_password',
+          lastPasswordChange: user.lastPasswordChange,
+          passwordHistoryLength: user.passwordHistory.length,
+          securityLevel: user.securitySettings.activityLogging.detailLevel
+        },
+        { detailLevel: user.securitySettings.activityLogging.detailLevel }
+      );
+    }
+
     await user.save();
 
     res.json({ message: 'Пароль успешно изменен' });

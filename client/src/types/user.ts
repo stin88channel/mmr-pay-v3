@@ -46,4 +46,12 @@ export interface User {
   createdAt: string;
   updatedAt: string;
   lastLogin?: string;
+  twoFactorAuth?: {
+    enabled: boolean;
+    secret: string;
+    backupCodes?: Array<{
+      code: string;
+      used: boolean;
+    }>;
+  };
 } 

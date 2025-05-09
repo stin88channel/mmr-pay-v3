@@ -1,0 +1,9 @@
+1. id
+2. method
+3. name_of_bank
+4. requisite
+5. фио
+6. daily_limit
+7. monthly_limit
+8. description
+9. active

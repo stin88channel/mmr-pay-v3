@@ -19,7 +19,6 @@ export default function ProtectedRoute({ children }: ProtectedRouteProps) {
   }
 
   if (!isAuthenticated) {
-    console.log('ProtectedRoute: Перенаправление на страницу входа');
     return <Navigate to="/auth/login" state={{ from: location }} replace />;
   }
 

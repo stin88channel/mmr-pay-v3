@@ -105,8 +105,26 @@ export const authApi = {
 
 export interface SecuritySettings {
   loginNotifications: boolean;
-  activityLogging: boolean;
+  activityLogging: {
+    enabled: boolean;
+    retentionPeriod: number;
+    detailLevel: 'basic' | 'standard' | 'detailed' | 'debug';
+  };
   failedLoginLimit: boolean;
+  ipRestrictions: {
+    enabled: boolean;
+    allowedIps: string[];
+  };
+  timeRestrictions: {
+    enabled: boolean;
+    workDaysOnly: boolean;
+    startTime: string;
+    endTime: string;
+  };
+  geoRestrictions: {
+    enabled: boolean;
+    allowedCountries: string[];
+  };
 }
 
 export const securityApi = {
@@ -128,5 +146,19 @@ export const securityApi = {
     }
   }
 };
+
+export interface ActivityLog {
+  _id: string;
+  timestamp: string;
+  action: string;
+  ipAddress: string;
+  deviceInfo: string;
+  location?: {
+    country?: string;
+    region?: string;
+    city?: string;
+  };
+  details?: Record<string, any>;
+}
 
 export { api }; 

@@ -4,12 +4,12 @@ import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Separator } from '@/components/ui/separator';
 import { Badge } from '@/components/ui/badge';
-import { motion } from 'framer-motion';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/components/ui/use-toast";
-import { User, Shield, Copy, RefreshCw, Globe, Settings, Key, Lock, History, FileText, FileCheck, Eye, EyeOff } from "lucide-react";
+import { User, Shield, Copy, RefreshCw, Globe, Settings, Key, Lock, History, FileText, FileCheck, Eye, EyeOff, LogIn, LogOut, MapPin, Info, Apple, Monitor, Terminal } from "lucide-react";
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '@/hooks/useAuth';
 import { api, authApi, securityApi, type SecuritySettings } from '@/lib/api';
@@ -19,6 +19,11 @@ import { useCurrentSession } from '@/hooks/useCurrentSession';
 import { Loader } from "@/components/ui/loader";
 import TwoFactorAuth from '@/pages/TwoFactorAuth';
 import { Switch } from "@/components/ui/switch";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Download, Filter } from "lucide-react";
+import * as XLSX from 'xlsx';
 
 const container = {
   hidden: { opacity: 0 },
@@ -143,6 +148,21 @@ interface ProfileData {
       city: string | null;
     };
   }>;
+  securitySettings?: SecuritySettings;
+}
+
+interface ActivityLog {
+  timestamp: Date;
+  event: string;
+  ip: string;
+  deviceInfo: string;
+  location?: {
+    country: string | null;
+    region: string | null;
+    city: string | null;
+  };
+  details?: Record<string, any>;
+  status?: 'success' | 'error' | 'info';
 }
 
 const Profile: React.FC = () => {
@@ -171,9 +191,45 @@ const Profile: React.FC = () => {
   const [ipRestrictions, setIpRestrictions] = useState(false);
   const [ipAddresses, setIpAddresses] = useState('');
   const [loginNotifications, setLoginNotifications] = useState(false);
-  const [activityLogging, setActivityLogging] = useState(false);
+  const [activityLogging, setActivityLogging] = useState<{
+    enabled: boolean;
+    retentionPeriod: number;
+    detailLevel: 'basic' | 'standard' | 'detailed' | 'debug';
+  }>({
+    enabled: false,
+    retentionPeriod: 30,
+    detailLevel: 'standard'
+  });
   const [failedLoginLimit, setFailedLoginLimit] = useState(false);
   const [passwordStrength, setPasswordStrength] = useState(0);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editForm, setEditForm] = useState({
+    login: '',
+    email: ''
+  });
+  const [editErrors, setEditErrors] = useState({
+    login: '',
+    email: ''
+  });
+  const [isLoginAvailable, setIsLoginAvailable] = useState(true);
+  const [isCheckingLogin, setIsCheckingLogin] = useState(false);
+  const [workDaysOnly, setWorkDaysOnly] = useState(false);
+  const [geoRestrictions, setGeoRestrictions] = useState(false);
+  const [notifications, setNotifications] = useState({
+    newRequests: false,
+    financialOperations: false,
+    systemNotifications: false
+  });
+  const [activityLogs, setActivityLogs] = useState<ActivityLog[]>([]);
+  const [activityLogSettings, setActivityLogSettings] = useState({
+    enabled: false,
+    retentionPeriod: 30,
+    detailLevel: 'standard' as 'basic' | 'standard' | 'detailed' | 'debug'
+  });
+  const [selectedLog, setSelectedLog] = useState<ActivityLog | null>(null);
+  const [eventFilter, setEventFilter] = useState<string>('all');
+  const [isDetailsOpen, setIsDetailsOpen] = useState(false);
+  const [isLogsLoading, setIsLogsLoading] = useState(false);
 
   useEffect(() => {
     fetchProfile();
@@ -195,6 +251,45 @@ const Profile: React.FC = () => {
       setActiveTab('personal');
     }
   }, [location]);
+
+  useEffect(() => {
+    if (profileData?.securitySettings) {
+      // console.log('Обновление состояний из профиля:', profileData.securitySettings);
+      setLoginNotifications(profileData.securitySettings.loginNotifications || false);
+      setFailedLoginLimit(profileData.securitySettings.failedLoginLimit || false);
+      setIpRestrictions(profileData.securitySettings.ipRestrictions?.enabled || false);
+      setIpAddresses(profileData.securitySettings.ipRestrictions?.allowedIps?.join('\n') || '');
+      setWorkDaysOnly(profileData.securitySettings.timeRestrictions?.workDaysOnly || false);
+      setGeoRestrictions(profileData.securitySettings.geoRestrictions?.enabled || false);
+    }
+  }, [profileData]);
+
+  useEffect(() => {
+    if (profileData?.notifications) {
+      // console.log('Обновление состояний уведомлений:', profileData.notifications);
+      setNotifications({
+        newRequests: profileData.notifications.newRequests || false,
+        financialOperations: profileData.notifications.financialOperations || false,
+        systemNotifications: profileData.notifications.systemNotifications || false
+      });
+    }
+  }, [profileData]);
+
+  useEffect(() => {
+    if (profileData?.securitySettings?.activityLogging) {
+      setActivityLogSettings({
+        enabled: profileData.securitySettings.activityLogging.enabled,
+        retentionPeriod: profileData.securitySettings.activityLogging.retentionPeriod,
+        detailLevel: profileData.securitySettings.activityLogging.detailLevel
+      });
+    }
+  }, [profileData]);
+
+  useEffect(() => {
+    if (securityTab === 'activity') {
+      fetchActivityLogs();
+    }
+  }, [securityTab]);
 
   const fetchProfile = async () => {
     try {
@@ -228,7 +323,15 @@ const Profile: React.FC = () => {
   };
 
   const handleCopyApiKey = () => {
-    navigator.clipboard.writeText(profileData?.apiKey || "");
+    if (!profileData?.apiKey) {
+      toast({
+        title: "Ошибка",
+        description: "API ключ не найден",
+        variant: "destructive",
+      });
+      return;
+    }
+    navigator.clipboard.writeText(profileData.apiKey);
     toast({
       title: "Успешно",
       description: "API ключ скопирован в буфер обмена",
@@ -237,16 +340,16 @@ const Profile: React.FC = () => {
 
   const handleResetApiKey = async () => {
     try {
-      await api.post('/user/reset-api-key');
-      await fetchProfile();
+      const response = await api.post('/user/reset-api-key');
+      setProfileData(response.data.user);
       toast({
         title: "Успешно",
         description: "API ключ успешно сброшен",
       });
-    } catch (error) {
+    } catch (error: any) {
       toast({
         title: "Ошибка",
-        description: "Не удалось сбросить API ключ",
+        description: error.response?.data?.message || "Не удалось сбросить API ключ",
         variant: "destructive",
       });
     }
@@ -308,46 +411,38 @@ const Profile: React.FC = () => {
         description: "Все сессии успешно завершены",
       });
     } catch (error: any) {
-      const message = error.response?.data?.message || "Не удалось завершить все сессии";
+      const message = error.response?.status === 404 
+        ? "Нет других активных сессий для завершения" 
+        : error.response?.data?.message || "Не удалось завершить все сессии";
       toast({
-        title: "Ошибка",
+        title: "Информация",
         description: message,
-        variant: "destructive",
+        variant: "default",
       });
     }
   };
 
-  const handleToggleNotification = async (type: keyof NonNullable<ProfileData['notifications']>) => {
+  const handleToggleNotification = async (type: keyof typeof notifications) => {
     try {
-      const currentValue = profileData?.notifications?.[type] ?? true;
-      const newValue = !currentValue;
-      
-      const response = await api.patch('/user/notifications', {
+      const newValue = !notifications[type];
+      const updatedNotifications = {
+        ...notifications,
         [type]: newValue
-      });
-      
-      if (response.data.notifications) {
-        setProfileData(prev => {
-          if (!prev) return prev;
-          const updatedData = {
-            ...prev,
-            notifications: response.data.notifications
-          };
-          return updatedData;
-        });
+      };
 
+      const response = await api.patch('/user/notifications', updatedNotifications);
+      
+      if (response.data.user?.notifications) {
+        setNotifications(response.data.user.notifications);
         toast({
           title: "Успешно",
           description: "Настройки уведомлений обновлены",
         });
-      } else {
-        throw new Error('Не удалось получить обновленные настройки');
       }
-    } catch (error) {
-      console.error('Ошибка при обновлении настроек:', error);
+    } catch (error: any) {
       toast({
         title: "Ошибка",
-        description: "Не удалось обновить настройки уведомлений",
+        description: error.response?.data?.message || 'Не удалось обновить настройки уведомлений',
         variant: "destructive",
       });
     }
@@ -417,8 +512,70 @@ const Profile: React.FC = () => {
     }
   };
 
-  const handleSaveIpRestrictions = () => {
-    // Implementation of handleSaveIpRestrictions
+  const handleSaveIpRestrictions = async () => {
+    try {
+      await api.post('/user/security/ip-restrictions', {
+        enabled: ipRestrictions,
+        allowedIps: ipAddresses.split('\n').filter(ip => ip.trim())
+      });
+      
+      toast({
+        title: "Успешно",
+        description: "IP-ограничения обновлены",
+      });
+    } catch (error: any) {
+      toast({
+        title: "Ошибка",
+        description: error.response?.data?.message || 'Не удалось обновить IP-ограничения',
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleSaveTimeRestrictions = async () => {
+    try {
+      await api.post('/user/security/time-restrictions', {
+        enabled: true,
+        workDaysOnly,
+        startTime: '09:00',
+        endTime: '18:00'
+      });
+      
+      toast({
+        title: "Успешно",
+        description: "Временные ограничения обновлены",
+      });
+    } catch (error: any) {
+      toast({
+        title: "Ошибка",
+        description: error.response?.data?.message || 'Не удалось обновить временные ограничения',
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleSaveGeoRestrictions = async () => {
+    try {
+      const response = await api.post('/user/security/geo-restrictions', {
+        enabled: geoRestrictions,
+        allowedCountries: ['RU']
+      });
+      
+      if (response.data.user?.securitySettings?.geoRestrictions) {
+        setGeoRestrictions(response.data.user.securitySettings.geoRestrictions.enabled);
+      }
+      
+      toast({
+        title: "Успешно",
+        description: "Геоограничения обновлены",
+      });
+    } catch (error: any) {
+      toast({
+        title: "Ошибка",
+        description: error.response?.data?.message || 'Не удалось обновить геоограничения',
+        variant: "destructive",
+      });
+    }
   };
 
   const handleExportLogs = () => {
@@ -486,20 +643,43 @@ const Profile: React.FC = () => {
 
   const handleSecuritySettingsChange = async (settings: Partial<SecuritySettings>) => {
     try {
-      const updatedSettings = {
+      const updatedSettings: SecuritySettings = {
         loginNotifications,
-        activityLogging,
+        activityLogging: {
+          enabled: activityLogging.enabled,
+          retentionPeriod: activityLogging.retentionPeriod,
+          detailLevel: activityLogging.detailLevel
+        },
         failedLoginLimit,
+        ipRestrictions: {
+          enabled: ipRestrictions,
+          allowedIps: ipAddresses.split('\n').filter(ip => ip.trim())
+        },
+        timeRestrictions: {
+          enabled: workDaysOnly,
+          workDaysOnly,
+          startTime: '09:00',
+          endTime: '18:00'
+        },
+        geoRestrictions: {
+          enabled: geoRestrictions,
+          allowedCountries: ['RU']
+        },
         ...settings
       };
       
-      await securityApi.updateSettings(updatedSettings);
+      const response = await api.put('/user/security/settings', updatedSettings);
       
+      // Обновляем состояния после успешного сохранения
       if (settings.loginNotifications !== undefined) {
         setLoginNotifications(settings.loginNotifications);
       }
-      if (settings.activityLogging !== undefined) {
-        setActivityLogging(settings.activityLogging);
+      if (settings.activityLogging?.enabled !== undefined) {
+        setActivityLogging({
+          enabled: settings.activityLogging.enabled,
+          retentionPeriod: settings.activityLogging.retentionPeriod || 30,
+          detailLevel: settings.activityLogging.detailLevel || 'standard'
+        });
       }
       if (settings.failedLoginLimit !== undefined) {
         setFailedLoginLimit(settings.failedLoginLimit);
@@ -516,6 +696,282 @@ const Profile: React.FC = () => {
         variant: "destructive",
       });
     }
+  };
+
+  const handleEditSubmit = async () => {
+    // Сбрасываем ошибки
+    setEditErrors({
+      login: '',
+      email: ''
+    });
+
+    // Валидация
+    let hasErrors = false;
+    const newErrors = {
+      login: '',
+      email: ''
+    };
+
+    if (!editForm.login) {
+      newErrors.login = 'Введите логин';
+      hasErrors = true;
+    } else if (editForm.login.length < 3) {
+      newErrors.login = 'Логин должен быть не менее 3 символов';
+      hasErrors = true;
+    }
+
+    if (!editForm.email) {
+      newErrors.email = 'Введите email';
+      hasErrors = true;
+    } else if (!/^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i.test(editForm.email)) {
+      newErrors.email = 'Введите корректный email';
+      hasErrors = true;
+    }
+
+    if (hasErrors) {
+      setEditErrors(newErrors);
+      return;
+    }
+
+    try {
+      const response = await api.patch('/user/profile', editForm);
+      setProfileData(response.data.user);
+      setIsEditing(false);
+      toast({
+        title: "Успешно",
+        description: "Профиль успешно обновлен",
+      });
+    } catch (error: any) {
+      const message = error.response?.data?.message || "Не удалось обновить профиль";
+      toast({
+        title: "Ошибка",
+        description: message,
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleEditCancel = async () => {
+    setIsEditing(false);
+    // Ждем завершения анимации перед сбросом формы
+    await new Promise(resolve => setTimeout(resolve, 200));
+    setEditForm({
+      login: profileData?.login || '',
+      email: profileData?.email || ''
+    });
+    setEditErrors({
+      login: '',
+      email: ''
+    });
+  };
+
+  useEffect(() => {
+    if (profileData) {
+      setEditForm({
+        login: profileData.login,
+        email: profileData.email
+      });
+    }
+  }, [profileData]);
+
+  // Функция для проверки доступности логина
+  const checkLoginAvailability = async (login: string) => {
+    if (!login || login === profileData.login) {
+      setIsLoginAvailable(true);
+      return;
+    }
+
+    setIsCheckingLogin(true);
+    try {
+      const response = await api.get(`/user/check-login/${login}`);
+      setIsLoginAvailable(response.data.available);
+    } catch (error) {
+      console.error('Ошибка при проверке логина:', error);
+      setIsLoginAvailable(false);
+    } finally {
+      setIsCheckingLogin(false);
+    }
+  };
+
+  // Обработчик изменения логина
+  const handleLoginChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const newLogin = e.target.value;
+    setEditForm(prev => ({ ...prev, login: newLogin }));
+    checkLoginAvailability(newLogin);
+  };
+
+  // Функция для проверки наличия изменений
+  const hasChanges = () => {
+    return editForm.login !== profileData.login || 
+           editForm.email !== profileData.email;
+  };
+
+  const fetchActivityLogs = async () => {
+    try {
+      setIsLogsLoading(true);
+      const response = await api.get('/user/activity-logs');
+      setActivityLogs(response.data.logs);
+    } catch (error) {
+      console.error('Ошибка при загрузке журнала активности:', error);
+      toast({
+        title: "Ошибка",
+        description: "Не удалось загрузить журнал активности",
+        variant: "destructive",
+      });
+    } finally {
+      setIsLogsLoading(false);
+    }
+  };
+
+  const handleActivityLogSettingsChange = async (settings: Partial<typeof activityLogSettings>) => {
+    try {
+      const updatedSettings = {
+        ...activityLogSettings,
+        ...settings
+      };
+
+      const securitySettings: SecuritySettings = {
+        loginNotifications,
+        activityLogging: {
+          enabled: updatedSettings.enabled,
+          retentionPeriod: updatedSettings.retentionPeriod,
+          detailLevel: updatedSettings.detailLevel
+        },
+        failedLoginLimit,
+        ipRestrictions: {
+          enabled: ipRestrictions,
+          allowedIps: ipAddresses.split('\n').filter(ip => ip.trim())
+        },
+        timeRestrictions: {
+          enabled: workDaysOnly,
+          workDaysOnly,
+          startTime: '09:00',
+          endTime: '18:00'
+        },
+        geoRestrictions: {
+          enabled: geoRestrictions,
+          allowedCountries: ['RU']
+        }
+      };
+
+      await api.put('/user/security/settings', securitySettings);
+      
+      setActivityLogSettings(updatedSettings);
+      setActivityLogging({
+        enabled: updatedSettings.enabled,
+        retentionPeriod: updatedSettings.retentionPeriod,
+        detailLevel: updatedSettings.detailLevel
+      });
+      
+      toast({
+        title: "Успешно",
+        description: "Настройки журналирования обновлены",
+      });
+    } catch (error: any) {
+      toast({
+        title: "Ошибка",
+        description: error.response?.data?.message || 'Не удалось обновить настройки журналирования',
+        variant: "destructive",
+      });
+    }
+  };
+
+  const getDeviceInfo = (deviceInfo: string) => {
+    const parts = deviceInfo.split(' ');
+    
+    // Определение браузера
+    let browser = 'Неизвестный браузер';
+    if (deviceInfo.includes('YaBrowser')) {
+      browser = 'Yandex Browser';
+    } else if (deviceInfo.includes('Chrome')) {
+      browser = 'Chrome';
+    } else if (deviceInfo.includes('Firefox')) {
+      browser = 'Firefox';
+    } else if (deviceInfo.includes('Safari')) {
+      browser = 'Safari';
+    } else if (deviceInfo.includes('Edge')) {
+      browser = 'Edge';
+    }
+
+    // Определение ОС
+    let os = 'Неизвестная ОС';
+    if (deviceInfo.includes('Windows NT')) {
+      os = 'Windows';
+    } else if (deviceInfo.includes('Mac OS')) {
+      os = 'macOS';
+    } else if (deviceInfo.includes('Linux')) {
+      os = 'Linux';
+    }
+
+    return { browser, os };
+  };
+
+  const exportToCSV = () => {
+    const headers = ['Время', 'Событие', 'IP-адрес', 'Устройство', 'Местоположение', 'Статус'];
+    const csvContent = [
+      headers.join(','),
+      ...activityLogs.map(log => [
+        new Date(log.timestamp).toLocaleString(),
+        log.event,
+        log.ip,
+        log.deviceInfo,
+        [log.location?.city, log.location?.region, log.location?.country].filter(Boolean).join(', '),
+        log.status
+      ].join(','))
+    ].join('\n');
+
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = `activity_log_${new Date().toISOString()}.csv`;
+    link.click();
+  };
+
+  const exportToExcel = () => {
+    // Подготовка данных
+    const headers = ['Время', 'Событие', 'IP-адрес', 'Устройство', 'Местоположение', 'Статус'];
+    const data = activityLogs.map(log => [
+      new Date(log.timestamp).toLocaleString(),
+      log.event,
+      log.ip,
+      log.deviceInfo,
+      [log.location?.city, log.location?.region, log.location?.country].filter(Boolean).join(', '),
+      log.status === 'success' ? 'Успешно' : log.status === 'error' ? 'Ошибка' : 'Информация'
+    ]);
+
+    // Создание рабочей книги
+    const wb = XLSX.utils.book_new();
+    const ws = XLSX.utils.aoa_to_sheet([headers, ...data]);
+
+    // Настройка ширины столбцов
+    const colWidths = [
+      { wch: 20 }, // Время
+      { wch: 25 }, // Событие
+      { wch: 15 }, // IP-адрес
+      { wch: 40 }, // Устройство
+      { wch: 30 }, // Местоположение
+      { wch: 15 }  // Статус
+    ];
+    ws['!cols'] = colWidths;
+
+    // Добавление листа в книгу
+    XLSX.utils.book_append_sheet(wb, ws, 'Журнал активности');
+
+    // Генерация файла
+    const fileName = `activity_log_${new Date().toISOString().split('T')[0]}.xlsx`;
+    XLSX.writeFile(wb, fileName);
+  };
+
+  const filteredLogs = activityLogs.filter(log => 
+    eventFilter === 'all' || log.event === eventFilter
+  );
+
+  const handleManualRefresh = async () => {
+    await fetchActivityLogs();
+    toast({
+      title: "Успешно",
+      description: "Журнал активности обновлен",
+    });
   };
 
   if (loading || !profileData) {
@@ -662,7 +1118,123 @@ const Profile: React.FC = () => {
                       </dd>
                     </motion.div>
                     <motion.div variants={item} className="pt-2">
-                      <Button>Редактировать информацию</Button>
+                      <AnimatePresence mode="wait" initial={false}>
+                        {isEditing ? (
+                          <motion.div
+                            key="edit-form"
+                            initial={{ opacity: 0, height: 0 }}
+                            animate={{ opacity: 1, height: "auto" }}
+                            exit={{ opacity: 0, height: 0 }}
+                            transition={{ 
+                              duration: 0.3,
+                              ease: "easeInOut"
+                            }}
+                            className="space-y-4 overflow-hidden"
+                          >
+                            <motion.div 
+                              initial={{ x: -20, opacity: 0 }}
+                              animate={{ x: 0, opacity: 1 }}
+                              exit={{ x: 20, opacity: 0 }}
+                              transition={{ delay: 0.1, duration: 0.2 }}
+                              className="space-y-2"
+                            >
+                              <Label htmlFor="login">Логин</Label>
+                              <div className="relative">
+                                <Input
+                                  id="login"
+                                  value={editForm.login}
+                                  onChange={handleLoginChange}
+                                  className={`${editErrors.login ? "border-red-500" : ""} ${
+                                    !isLoginAvailable ? "border-red-500" : isLoginAvailable ? "border-green-500" : ""
+                                  }`}
+                                />
+                                {isCheckingLogin && (
+                                  <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-500"></div>
+                                  </div>
+                                )}
+                                {!isCheckingLogin && editForm.login && editForm.login !== profileData.login && (
+                                  <div className="absolute right-3 top-1/2 -translate-y-1/2">
+                                    <div className={`h-4 w-4 rounded-full ${isLoginAvailable ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                                  </div>
+                                )}
+                              </div>
+                              <AnimatePresence>
+                                {editErrors.login && (
+                                  <motion.p 
+                                    initial={{ opacity: 0, y: -10 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    exit={{ opacity: 0, y: -10 }}
+                                    transition={{ duration: 0.2 }}
+                                    className="text-sm text-red-500"
+                                  >
+                                    {editErrors.login}
+                                  </motion.p>
+                                )}
+                              </AnimatePresence>
+                            </motion.div>
+                            <motion.div 
+                              initial={{ x: -20, opacity: 0 }}
+                              animate={{ x: 0, opacity: 1 }}
+                              exit={{ x: 20, opacity: 0 }}
+                              transition={{ delay: 0.2, duration: 0.2 }}
+                              className="space-y-2"
+                            >
+                              <Label htmlFor="email">Email</Label>
+                              <Input
+                                id="email"
+                                type="email"
+                                value={editForm.email}
+                                onChange={(e) => setEditForm(prev => ({ ...prev, email: e.target.value }))}
+                                className={editErrors.email ? "border-red-500" : ""}
+                              />
+                              <AnimatePresence>
+                                {editErrors.email && (
+                                  <motion.p 
+                                    initial={{ opacity: 0, y: -10 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                    exit={{ opacity: 0, y: -10 }}
+                                    transition={{ duration: 0.2 }}
+                                    className="text-sm text-red-500"
+                                  >
+                                    {editErrors.email}
+                                  </motion.p>
+                                )}
+                              </AnimatePresence>
+                            </motion.div>
+                            <motion.div 
+                              initial={{ opacity: 0, y: 20 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              exit={{ opacity: 0, y: -20 }}
+                              transition={{ delay: 0.3, duration: 0.2 }}
+                              className="flex gap-2"
+                            >
+                              <Button 
+                                onClick={handleEditSubmit}
+                                disabled={!hasChanges() || !isLoginAvailable || isCheckingLogin}
+                                className={`${
+                                  !hasChanges() || !isLoginAvailable || isCheckingLogin
+                                    ? 'bg-gray-600 text-gray-300 cursor-not-allowed pointer-events-none select-none'
+                                    : 'bg-primary hover:bg-primary/90 text-primary-foreground'
+                                }`}
+                              >
+                                Сохранить
+                              </Button>
+                              <Button variant="outline" onClick={handleEditCancel}>Отмена</Button>
+                            </motion.div>
+                          </motion.div>
+                        ) : (
+                          <motion.div
+                            key="edit-button"
+                            initial={{ opacity: 0, y: 20 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -20 }}
+                            transition={{ duration: 0.2 }}
+                          >
+                            <Button onClick={() => setIsEditing(true)}>Редактировать информацию</Button>
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
                     </motion.div>
                   </motion.dl>
                 </CardContent>
@@ -691,7 +1263,7 @@ const Profile: React.FC = () => {
                         variant="outline" 
                         onClick={() => handleToggleNotification('newRequests')}
                       >
-                        {profileData?.notifications?.newRequests === true ? 'Включено' : 'Выключено'}
+                        {notifications.newRequests ? 'Включено' : 'Выключено'}
                       </Button>
                     </motion.div>
                     
@@ -706,7 +1278,7 @@ const Profile: React.FC = () => {
                         variant="outline"
                         onClick={() => handleToggleNotification('financialOperations')}
                       >
-                        {profileData?.notifications?.financialOperations === true ? 'Включено' : 'Выключено'}
+                        {notifications.financialOperations ? 'Включено' : 'Выключено'}
                       </Button>
                     </motion.div>
                     
@@ -721,7 +1293,7 @@ const Profile: React.FC = () => {
                         variant="outline"
                         onClick={() => handleToggleNotification('systemNotifications')}
                       >
-                        {profileData?.notifications?.systemNotifications === true ? 'Включено' : 'Выключено'}
+                        {notifications.systemNotifications ? 'Включено' : 'Выключено'}
                       </Button>
                     </motion.div>
                   </motion.div>
@@ -802,8 +1374,8 @@ const Profile: React.FC = () => {
                         </div>
                         <Switch
                           id="activity-logging"
-                          checked={activityLogging}
-                          onCheckedChange={(checked) => handleSecuritySettingsChange({ activityLogging: checked })}
+                          checked={activityLogging.enabled}
+                          onCheckedChange={(checked) => handleSecuritySettingsChange({ activityLogging: { enabled: checked, retentionPeriod: activityLogging.retentionPeriod, detailLevel: activityLogging.detailLevel } })}
                         />
                       </div>
                       
@@ -837,62 +1409,77 @@ const Profile: React.FC = () => {
                     </CardHeader>
                     <CardContent className="space-y-4">
                       <motion.div variants={container} className="space-y-4">
-                        {profileData.ipAddresses.map((ip, index) => {
-                          const browserInfo = getBrowserInfo(ip.deviceInfo);
-                          const isCurrentSession = currentSession && 
-                            ip.deviceInfo === currentSession.deviceInfo && 
-                            ip.address === currentSession.address;
-                          
-                          return (
-                            <motion.div key={index} variants={item} className="flex items-center justify-between p-4 border rounded-lg">
-                              <div className="space-y-1">
-                                <div className="flex items-center gap-2">
-                                  {getBrowserIcon(browserInfo.icon)}
-                                  <p className="font-medium">{browserInfo.name}</p>
+                        {profileData.ipAddresses && profileData.ipAddresses.length > 0 ? (
+                          profileData.ipAddresses.map((ip, index) => {
+                            const browserInfo = getBrowserInfo(ip.deviceInfo);
+                            const isCurrentSession = currentSession && 
+                              ip.deviceInfo === currentSession.deviceInfo && 
+                              ip.address === currentSession.address;
+                            
+                            return (
+                              <motion.div key={index} variants={item} className="flex items-center justify-between p-4 border rounded-lg">
+                                <div className="space-y-1">
+                                  <div className="flex items-center gap-2">
+                                    {getBrowserIcon(browserInfo.icon)}
+                                    <p className="font-medium">{browserInfo.name}</p>
+                                  </div>
+                                  <p className="text-xs text-muted-foreground font-mono">
+                                    {ip.deviceInfo}
+                                  </p>
+                                  <p className="text-sm text-muted-foreground">
+                                    IP: {ip.address} • {[
+                                      ip.location.city,
+                                      ip.location.region,
+                                      ip.location.country
+                                    ].filter(Boolean).join(', ') || 'Не определено'}
+                                  </p>
+                                  <p className="text-sm text-muted-foreground">
+                                    {new Date(ip.lastUsed).toLocaleString()}
+                                  </p>
                                 </div>
-                                <p className="text-xs text-muted-foreground font-mono">
-                                  {ip.deviceInfo}
-                                </p>
-                                <p className="text-sm text-muted-foreground">
-                                  IP: {ip.address} • {[
-                                    ip.location.city,
-                                    ip.location.region,
-                                    ip.location.country
-                                  ].filter(Boolean).join(', ') || 'Не определено'}
-                                </p>
-                                <p className="text-sm text-muted-foreground">
-                                  {new Date(ip.lastUsed).toLocaleString()}
-                                </p>
-                              </div>
-                              {isCurrentSession ? (
-                                <div className="flex items-center gap-2">
-                                  <span className="px-2 py-1 text-xs bg-green-500/10 text-green-500 rounded-full">
-                                    Текущая
-                                  </span>
-                                </div>
-                              ) : (
-                                <Button 
-                                  variant="outline" 
-                                  size="sm"
-                                  onClick={() => handleTerminateSession(index)}
-                                >
-                                  Завершить
-                                </Button>
-                              )}
-                            </motion.div>
-                          );
-                        })}
+                                {isCurrentSession ? (
+                                  <div className="flex items-center gap-2">
+                                    <span className="px-2 py-1 text-xs bg-green-500/10 text-green-500 rounded-full">
+                                      Текущая
+                                    </span>
+                                  </div>
+                                ) : (
+                                  <Button 
+                                    variant="outline" 
+                                    size="sm"
+                                    onClick={() => handleTerminateSession(index)}
+                                  >
+                                    Завершить
+                                  </Button>
+                                )}
+                              </motion.div>
+                            );
+                          })
+                        ) : (
+                          <motion.div 
+                            variants={item} 
+                            className="flex flex-col items-center justify-center p-8 text-center border rounded-lg bg-muted/50"
+                          >
+                            <History className="h-8 w-8 text-muted-foreground mb-2" />
+                            <p className="text-muted-foreground">Нет активных сессий</p>
+                            <p className="text-sm text-muted-foreground mt-1">
+                              Здесь будут отображаться все устройства, с которых вы входили в аккаунт
+                            </p>
+                          </motion.div>
+                        )}
                       </motion.div>
 
-                      <motion.div variants={item}>
-                        <Button 
-                          variant="outline" 
-                          className="w-full"
-                          onClick={handleTerminateAllSessions}
-                        >
-                          Завершить все другие сессии
-                        </Button>
-                      </motion.div>
+                      {profileData.ipAddresses && profileData.ipAddresses.length > 0 && (
+                        <motion.div variants={item}>
+                          <Button 
+                            variant="outline" 
+                            className="w-full"
+                            onClick={handleTerminateAllSessions}
+                          >
+                            Завершить все другие сессии
+                          </Button>
+                        </motion.div>
+                      )}
                     </CardContent>
                   </Card>
                 </motion.div>
@@ -1111,7 +1698,30 @@ const Profile: React.FC = () => {
                       <Switch
                         id="ip-restrictions"
                         checked={ipRestrictions}
-                        onCheckedChange={setIpRestrictions}
+                        onCheckedChange={async (checked) => {
+                          try {
+                            const response = await api.post('/user/security/ip-restrictions', {
+                              enabled: checked,
+                              allowedIps: ipAddresses.split('\n').filter(ip => ip.trim())
+                            });
+                            
+                            // Обновляем состояние в любом случае
+                            setIpRestrictions(checked);
+                            
+                            toast({
+                              title: "Успешно",
+                              description: "IP-ограничения обновлены",
+                            });
+                          } catch (error: any) {
+                            // В случае ошибки возвращаем предыдущее состояние
+                            setIpRestrictions(!checked);
+                            toast({
+                              title: "Ошибка",
+                              description: error.response?.data?.message || 'Не удалось обновить IP-ограничения',
+                              variant: "destructive",
+                            });
+                          }
+                        }}
                       />
                     </div>
                     
@@ -1155,7 +1765,35 @@ const Profile: React.FC = () => {
                           Пн-Пт, с 9:00 до 18:00
                         </p>
                       </div>
-                      <Switch />
+                      <Switch
+                        checked={workDaysOnly}
+                        onCheckedChange={async (checked) => {
+                          try {
+                            const response = await api.post('/user/security/time-restrictions', {
+                              enabled: checked,
+                              workDaysOnly: checked,
+                              startTime: '09:00',
+                              endTime: '18:00'
+                            });
+                            
+                            // Обновляем состояние в любом случае
+                            setWorkDaysOnly(checked);
+                            
+                            toast({
+                              title: "Успешно",
+                              description: "Временные ограничения обновлены",
+                            });
+                          } catch (error: any) {
+                            // В случае ошибки возвращаем предыдущее состояние
+                            setWorkDaysOnly(!checked);
+                            toast({
+                              title: "Ошибка",
+                              description: error.response?.data?.message || 'Не удалось обновить временные ограничения',
+                              variant: "destructive",
+                            });
+                          }
+                        }}
+                      />
                     </div>
                   </div>
                   
@@ -1174,7 +1812,33 @@ const Profile: React.FC = () => {
                           Блокировать доступ из других стран
                         </p>
                       </div>
-                      <Switch />
+                      <Switch
+                        checked={geoRestrictions}
+                        onCheckedChange={async (checked) => {
+                          try {
+                            const response = await api.post('/user/security/geo-restrictions', {
+                              enabled: checked,
+                              allowedCountries: ['RU']
+                            });
+                            
+                            // Обновляем состояние в любом случае
+                            setGeoRestrictions(checked);
+                            
+                            toast({
+                              title: "Успешно",
+                              description: "Геоограничения обновлены",
+                            });
+                          } catch (error: any) {
+                            // В случае ошибки возвращаем предыдущее состояние
+                            setGeoRestrictions(!checked);
+                            toast({
+                              title: "Ошибка",
+                              description: error.response?.data?.message || 'Не удалось обновить геоограничения',
+                              variant: "destructive",
+                            });
+                          }
+                        }}
+                      />
                     </div>
                   </div>
                 </CardContent>
@@ -1193,113 +1857,326 @@ const Profile: React.FC = () => {
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-6">
-                  <div className="flex flex-wrap gap-2">
-                    <Button variant="outline" className="flex items-center gap-2" onClick={handleExportLogs}>
-                      <FileCheck size={16} />
-                      Экспорт в Excel
-                    </Button>
-                    <Button variant="outline" className="flex items-center gap-2" onClick={handleExportLogs}>
-                      <FileText size={16} />
-                      Экспорт в CSV
-                    </Button>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-4">
+                      <h3 className="text-lg font-medium">Журнал активности</h3>
+                      <Select value={eventFilter} onValueChange={setEventFilter}>
+                        <SelectTrigger className="w-[180px]">
+                          <SelectValue placeholder="Фильтр событий" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">Все события</SelectItem>
+                          <SelectItem value="Изменение пароля">Изменение пароля</SelectItem>
+                          <SelectItem value="Вход в систему">Вход в систему</SelectItem>
+                          <SelectItem value="Выход из системы">Выход из системы</SelectItem>
+                          <SelectItem value="Изменение настроек">Изменение настроек</SelectItem>
+                          <SelectItem value="API запрос">API запрос</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button variant="outline" onClick={exportToExcel}>
+                        <FileText className="h-4 w-4 mr-2" />
+                        Экспорт Excel
+                      </Button>
+                      <Button variant="outline" onClick={exportToCSV}>
+                        <Download className="h-4 w-4 mr-2" />
+                        Экспорт CSV
+                      </Button>
+                      <Button variant="outline" onClick={handleManualRefresh} disabled={isLogsLoading}>
+                        <RefreshCw className={`h-4 w-4 mr-2 ${isLogsLoading ? 'animate-spin' : ''}`} />
+                        Обновить
+                      </Button>
+                    </div>
                   </div>
-                  
-                  <div className="rounded-md border overflow-hidden">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="bg-muted border-b">
-                          <th className="p-3 text-left">Время</th>
-                          <th className="p-3 text-left">Событие</th>
-                          <th className="p-3 text-left">IP-адрес</th>
-                          <th className="p-3 text-left">Устройство</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {[
-                          {
-                            time: '02.05.2025 14:32:15',
-                            event: 'Вход в систему',
-                            ip: '192.168.1.1',
-                            device: 'Chrome на Windows'
-                          },
-                          {
-                            time: '02.05.2025 14:30:45',
-                            event: 'Изменение пароля',
-                            ip: '192.168.1.1',
-                            device: 'Chrome на Windows'
-                          },
-                          {
-                            time: '01.05.2025 09:15:22',
-                            event: 'Вход в систему',
-                            ip: '192.168.1.1',
-                            device: 'Safari на iPhone'
-                          },
-                          {
-                            time: '30.04.2025 18:45:11',
-                            event: 'Неудачная попытка входа',
-                            ip: '203.0.113.42',
-                            device: 'Unknown'
-                          },
-                          {
-                            time: '29.04.2025 12:33:09',
-                            event: 'Изменение настроек безопасности',
-                            ip: '192.168.1.2',
-                            device: 'Firefox на MacOS'
-                          }
-                        ].map((log, i) => (
-                          <tr key={i} className="border-b last:border-b-0 hover:bg-muted/50">
-                            <td className="p-3">{log.time}</td>
-                            <td className="p-3">{log.event}</td>
-                            <td className="p-3">{log.ip}</td>
-                            <td className="p-3">{log.device}</td>
+
+                  <Card>
+                    <CardHeader className="pb-3">
+                      <CardTitle className="text-base">Настройки журнала</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-4 flex-1">
+                          <div className="space-y-0.5">
+                            <Label htmlFor="activity-logging">Включить журнал</Label>
+                            <p className="text-sm text-muted-foreground">
+                              Запись событий в журнал
+                            </p>
+                          </div>
+                          <Switch
+                            id="activity-logging"
+                            checked={activityLogSettings.enabled}
+                            onCheckedChange={(checked) => handleActivityLogSettingsChange({ enabled: checked })}
+                          />
+                        </div>
+
+                        <Separator orientation="vertical" className="h-12 mx-4" />
+
+                        <div className="flex items-center gap-4 flex-1">
+                          <div className="space-y-0.5">
+                            <Label htmlFor="retention-period">Срок хранения</Label>
+                            <p className="text-sm text-muted-foreground">
+                              Период хранения записей
+                            </p>
+                          </div>
+                          <Select
+                            value={activityLogSettings.retentionPeriod.toString()}
+                            onValueChange={(value) => handleActivityLogSettingsChange({ retentionPeriod: parseInt(value) })}
+                            disabled={!activityLogSettings.enabled}
+                          >
+                            <SelectTrigger id="retention-period" className="w-[120px]">
+                              <SelectValue placeholder="Выберите срок" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="30">30 дней</SelectItem>
+                              <SelectItem value="60">60 дней</SelectItem>
+                              <SelectItem value="90">90 дней</SelectItem>
+                              <SelectItem value="180">180 дней</SelectItem>
+                              <SelectItem value="365">365 дней</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        <Separator orientation="vertical" className="h-12 mx-4" />
+
+                        <div className="flex items-center gap-4 flex-1">
+                          <div className="space-y-0.5">
+                            <Label htmlFor="detail-level">Уровень детализации</Label>
+                            <p className="text-sm text-muted-foreground">
+                              Детализация записей
+                            </p>
+                          </div>
+                          <Select
+                            value={activityLogSettings.detailLevel}
+                            onValueChange={(value: 'basic' | 'standard' | 'detailed' | 'debug') => 
+                              handleActivityLogSettingsChange({ detailLevel: value })}
+                            disabled={!activityLogSettings.enabled}
+                          >
+                            <SelectTrigger id="detail-level" className="w-[120px]">
+                              <SelectValue placeholder="Выберите уровень" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="basic">Базовый</SelectItem>
+                              <SelectItem value="standard">Стандартный</SelectItem>
+                              <SelectItem value="detailed">Подробный</SelectItem>
+                              <SelectItem value="debug">Отладочный</SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <div className="rounded-md border overflow-hidden relative">
+                    {isLogsLoading && (
+                      <div className="absolute inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center z-10">
+                        <div className="flex items-center gap-2">
+                          <RefreshCw className="h-6 w-6 animate-spin" />
+                          <span>Загрузка...</span>
+                        </div>
+                      </div>
+                    )}
+                    {filteredLogs.length > 0 ? (
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="bg-muted border-b">
+                            <th className="p-3 text-left">Время</th>
+                            <th className="p-3 text-left">Событие</th>
+                            <th className="p-3 text-left">IP-адрес</th>
+                            <th className="p-3 text-left">Устройство</th>
+                            <th className="p-3 text-left">Местоположение</th>
+                            <th className="p-3 text-left">Статус</th>
+                            <th className="p-3 text-left">Детали</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  
-                  <div className="flex justify-center">
-                    <Button variant="outline">Показать больше</Button>
-                  </div>
-                  
-                  <Separator />
-                  
-                  <div>
-                    <h3 className="text-base font-medium mb-2">Настройки журналирования</h3>
-                    <p className="text-sm text-muted-foreground mb-4">
-                      Настройте параметры хранения журналов безопасности
-                    </p>
-                    
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      <div className="space-y-2">
-                        <Label>Срок хранения журналов</Label>
-                        <select 
-                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-base ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 md:text-sm"
-                        >
-                          <option value="30">30 дней</option>
-                          <option value="90">90 дней</option>
-                          <option value="180">180 дней</option>
-                          <option value="365">1 год</option>
-                        </select>
+                        </thead>
+                        <tbody>
+                          {filteredLogs.map((log, i) => (
+                            <tr key={i} className="border-b last:border-b-0 hover:bg-muted/50">
+                              <td className="p-3">
+                                <TooltipProvider>
+                                  <Tooltip>
+                                    <TooltipTrigger>
+                                      {new Date(log.timestamp).toLocaleString()}
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                      <p>Полная дата: {new Date(log.timestamp).toLocaleString('ru-RU', { 
+                                        year: 'numeric', 
+                                        month: 'long', 
+                                        day: 'numeric',
+                                        hour: '2-digit',
+                                        minute: '2-digit',
+                                        second: '2-digit'
+                                      })}</p>
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
+                              </td>
+                              <td className="p-3">
+                                <div className="flex items-center gap-2">
+                                  {log.event === 'Изменение пароля' && <Key className="h-4 w-4 text-blue-500" />}
+                                  {log.event === 'Вход в систему' && <LogIn className="h-4 w-4 text-green-500" />}
+                                  {log.event === 'Выход из системы' && <LogOut className="h-4 w-4 text-red-500" />}
+                                  {log.event === 'Изменение настроек' && <Settings className="h-4 w-4 text-purple-500" />}
+                                  {log.event === 'API запрос' && <Globe className="h-4 w-4 text-orange-500" />}
+                                  {log.event}
+                                </div>
+                              </td>
+                              <td className="p-3">
+                                <TooltipProvider>
+                                  <Tooltip>
+                                    <TooltipTrigger>
+                                      <div className="flex items-center gap-2">
+                                        <Globe className="h-4 w-4 text-muted-foreground" />
+                                        {log.ip}
+                                      </div>
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                      <p>IP-адрес: {log.ip}</p>
+                                      <p>Тип: {log.ip.includes(':') ? 'IPv6' : 'IPv4'}</p>
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
+                              </td>
+                              <td className="p-3">
+                                <TooltipProvider>
+                                  <Tooltip>
+                                    <TooltipTrigger>
+                                      {(() => {
+                                        const { browser, os } = getDeviceInfo(log.deviceInfo);
+                                        const getBrowserIcon = (browserName: string) => {
+                                          switch (browserName) {
+                                            case 'Yandex Browser':
+                                              return <div className="h-4 w-4"><YandexIcon /></div>;
+                                            case 'Chrome':
+                                              return <div className="h-4 w-4"><ChromeIcon /></div>;
+                                            case 'Firefox':
+                                              return <div className="h-4 w-4"><FirefoxIcon /></div>;
+                                            case 'Safari':
+                                              return <div className="h-4 w-4"><SafariIcon /></div>;
+                                            case 'Edge':
+                                              return <div className="h-4 w-4"><EdgeIcon /></div>;
+                                            default:
+                                              return <div className="h-4 w-4"><Globe /></div>;
+                                          }
+                                        };
+                                        return (
+                                          <div className="space-y-1">
+                                            <div className="text-sm flex items-center gap-2">
+                                              {getBrowserIcon(browser)}
+                                              {browser}
+                                            </div>
+                                            <div className="text-xs text-muted-foreground flex items-center gap-2">
+                                              {os === 'Windows' && <Monitor className="h-3 w-3" />}
+                                              {os === 'macOS' && <Apple className="h-3 w-3" />}
+                                              {os === 'Linux' && <Terminal className="h-3 w-3" />}
+                                              {os}
+                                            </div>
+                                          </div>
+                                        );
+                                      })()}
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                      <p>Полная информация об устройстве:</p>
+                                      <p className="text-xs mt-1">{log.deviceInfo}</p>
+                                    </TooltipContent>
+                                  </Tooltip>
+                                </TooltipProvider>
+                              </td>
+                              <td className="p-3">
+                                <div className="flex items-center gap-2">
+                                  <MapPin className="h-4 w-4 text-muted-foreground" />
+                                  {[
+                                    log.location?.city,
+                                    log.location?.region,
+                                    log.location?.country
+                                  ].filter(Boolean).join(', ') || 'Не определено'}
+                                </div>
+                              </td>
+                              <td className="p-3">
+                                <Badge variant={log.status === 'success' ? 'success' : log.status === 'error' ? 'destructive' : 'default'}>
+                                  {log.status === 'success' ? 'Успешно' : log.status === 'error' ? 'Ошибка' : 'Информация'}
+                                </Badge>
+                              </td>
+                              <td className="p-3">
+                                {log.details && (
+                                  <Button 
+                                    variant="ghost" 
+                                    size="sm" 
+                                    className="h-8 w-8 p-0"
+                                    onClick={() => {
+                                      setSelectedLog(log);
+                                      setIsDetailsOpen(true);
+                                    }}
+                                  >
+                                    <Info className="h-4 w-4" />
+                                  </Button>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    ) : (
+                      <div className="flex flex-col items-center justify-center p-8 text-center">
+                        <History className="h-12 w-12 text-muted-foreground mb-4" />
+                        <h3 className="text-lg font-medium mb-2">Журнал активности пуст</h3>
+                        <p className="text-sm text-muted-foreground max-w-sm">
+                          Здесь будут отображаться все действия, связанные с вашим аккаунтом. 
+                          Включите журналирование, чтобы начать отслеживать активность.
+                        </p>
                       </div>
-                      
-                      <div className="space-y-2">
-                        <Label>Уровень детализации</Label>
-                        <select 
-                          className="w-full rounded-md border border-input bg-background px-3 py-2 text-base ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 md:text-sm"
-                        >
-                          <option value="basic">Базовый</option>
-                          <option value="standard">Стандартный</option>
-                          <option value="detailed">Детальный</option>
-                          <option value="debug">Отладочный</option>
-                        </select>
-                      </div>
-                    </div>
-                    
-                    <div className="flex justify-end mt-4">
-                      <Button>Сохранить настройки</Button>
-                    </div>
+                    )}
                   </div>
+
+                  <Dialog open={isDetailsOpen} onOpenChange={setIsDetailsOpen}>
+                    <DialogContent>
+                      <DialogHeader>
+                        <DialogTitle>Детали события</DialogTitle>
+                        <DialogDescription>
+                          Подробная информация о выбранном событии из журнала активности
+                        </DialogDescription>
+                      </DialogHeader>
+                      {selectedLog && (
+                        <div className="space-y-4">
+                          <div>
+                            <h4 className="font-medium mb-2">Основная информация</h4>
+                            <div className="space-y-2 text-sm">
+                              <p><span className="text-muted-foreground">Время:</span> {new Date(selectedLog.timestamp).toLocaleString()}</p>
+                              <p><span className="text-muted-foreground">Событие:</span> {selectedLog.event}</p>
+                              <div className="flex items-center gap-2">
+                                <span className="text-muted-foreground">Статус:</span>
+                                <Badge variant={selectedLog.status === 'success' ? 'success' : selectedLog.status === 'error' ? 'destructive' : 'default'}>
+                                  {selectedLog.status === 'success' ? 'Успешно' : selectedLog.status === 'error' ? 'Ошибка' : 'Информация'}
+                                </Badge>
+                              </div>
+                            </div>
+                          </div>
+                          
+                          <div>
+                            <h4 className="font-medium mb-2">Технические детали</h4>
+                            <div className="space-y-2 text-sm">
+                              <p><span className="text-muted-foreground">IP-адрес:</span> {selectedLog.ip}</p>
+                              <p><span className="text-muted-foreground">Устройство:</span> {selectedLog.deviceInfo}</p>
+                              <p><span className="text-muted-foreground">Местоположение:</span> {[
+                                selectedLog.location?.city,
+                                selectedLog.location?.region,
+                                selectedLog.location?.country
+                              ].filter(Boolean).join(', ') || 'Не определено'}</p>
+                            </div>
+                          </div>
+
+                          {selectedLog.details && (
+                            <div>
+                              <h4 className="font-medium mb-2">Дополнительная информация</h4>
+                              <pre className="bg-muted p-4 rounded-md text-sm overflow-auto">
+                                {JSON.stringify(selectedLog.details, null, 2)}
+                              </pre>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </DialogContent>
+                  </Dialog>
                 </CardContent>
               </Card>
             </TabsContent>

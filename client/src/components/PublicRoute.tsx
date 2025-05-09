@@ -11,10 +11,8 @@ const PublicRoute = ({ children }: PublicRouteProps) => {
   const navigate = useNavigate();
 
   useEffect(() => {
-    console.log('PublicRoute состояние:', { isAuthenticated, isLoading });
     
     if (!isLoading && isAuthenticated) {
-      console.log('Пользователь аутентифицирован, перенаправление на главную');
       navigate('/', { replace: true });
     }
   }, [isLoading, isAuthenticated, navigate]);
